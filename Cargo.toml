@@ -1,0 +1,20 @@
+[package]
+name = "oxoq_filt"
+version = "0.1.0"
+edition = "2024"
+authors = ["William Harvey"]
+description = "OxoG artifact filter with CpG island and homopolymer context awareness"
+repository = "https://github.com/wharvey31/oxoq_filter"
+license = "MIT"
+
+[dependencies]
+rust-htslib = "1.0"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1.0"
+thiserror = "1.0"
+
+[[bin]]
+name = "oxoq_filt"
+path = "src/main.rs"
