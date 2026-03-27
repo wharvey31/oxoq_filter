@@ -325,30 +325,26 @@ impl ReferenceHelper {
         Ok(ReferenceHelper { fasta })
     }
 
-    /// Check if the variant position is at a CpG dinucleotide in the reference.
+    /// Check if the trinucleotide context (upstream base + ref + downstream base)
+    /// has GC content > 0.5 (i.e., at least 2 of 3 bases are G or C).
     /// pos is 0-based.
     fn is_cpg_dinucleotide(&self, chrom: &str, pos: u64, ref_base: char) -> bool {
         let chrom_len = self.fasta.fetch_seq_len(chrom);
-        if chrom_len == 0 {
+        if chrom_len == 0 || pos == 0 || pos + 1 >= chrom_len {
             return false;
         }
 
-        let ref_base = ref_base.to_ascii_uppercase();
+        let trinuc = match self.fasta.fetch_seq_string(chrom, (pos - 1) as usize, (pos + 1) as usize) {
+            Ok(s) => s.to_uppercase(),
+            Err(_) => return false,
+        };
 
-        if ref_base == 'C' && pos + 1 < chrom_len {
-            if let Ok(next_base) = self.fasta.fetch_seq_string(chrom, (pos + 1) as usize, (pos + 1) as usize) {
-                if next_base.to_uppercase() == "G" {
-                    return true;
-                }
-            }
-        } else if ref_base == 'G' && pos > 0 {
-            if let Ok(prev_base) = self.fasta.fetch_seq_string(chrom, (pos - 1) as usize, (pos - 1) as usize) {
-                if prev_base.to_uppercase() == "C" {
-                    return true;
-                }
-            }
+        if trinuc.len() != 3 {
+            return false;
         }
-        false
+
+        let gc_count = trinuc.chars().filter(|&c| c == 'G' || c == 'C').count();
+        gc_count > 1
     }
 }
 

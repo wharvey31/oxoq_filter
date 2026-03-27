@@ -1,6 +1,6 @@
 [package]
 name = "oxoq_filt"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["William Harvey"]
 description = "OxoG artifact filter with CpG island and homopolymer context awareness"
