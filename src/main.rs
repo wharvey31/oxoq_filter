@@ -328,7 +328,7 @@ impl ReferenceHelper {
     /// Check if the trinucleotide context (upstream base + ref + downstream base)
     /// has GC content > 0.5 (i.e., at least 2 of 3 bases are G or C).
     /// pos is 0-based.
-    fn is_cpg_dinucleotide(&self, chrom: &str, pos: u64, ref_base: char) -> bool {
+    fn is_cpg_dinucleotide(&self, chrom: &str, pos: u64, _ref_base: char) -> bool {
         let chrom_len = self.fasta.fetch_seq_len(chrom);
         if chrom_len == 0 || pos == 0 || pos + 1 >= chrom_len {
             return false;
