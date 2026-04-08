@@ -124,6 +124,13 @@ struct Args {
     /// Verbose logging
     #[arg(short, long, default_value = "false")]
     verbose: bool,
+
+    /// GQ threshold for filtering OxoG candidates whose trinucleotide context
+    /// is one of the OxoG-prone triplets (AGA, AGC, AGG, CCA, CCC, CCG, CCT,
+    /// CGA, CGG, GCA, GCC, GCT, GGA, GGC, GGG, TCA, TCC, TCG, TCT, TGA, TGC, TGG).
+    /// Candidates with GQ below this value are filtered.
+    #[arg(long)]
+    context_gq_threshold: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +150,7 @@ struct FilterConfig {
     homopolymer_min_length: usize,
     homopolymer_flank: usize,
     hard_filter: bool,
+    context_gq_threshold: Option<f64>,
 }
 
 impl From<&Args> for FilterConfig {
@@ -160,6 +168,7 @@ impl From<&Args> for FilterConfig {
             homopolymer_min_length: args.homopolymer_min_length,
             homopolymer_flank: args.homopolymer_flank,
             hard_filter: args.hard_filter,
+            context_gq_threshold: args.context_gq_threshold,
         }
     }
 }
@@ -325,6 +334,19 @@ impl ReferenceHelper {
         Ok(ReferenceHelper { fasta })
     }
 
+    /// Return the trinucleotide context (upstream + ref + downstream) at pos (0-based),
+    /// upper-cased. Returns None if the position is at a chromosome boundary.
+    fn get_trinucleotide(&self, chrom: &str, pos: u64) -> Option<String> {
+        let chrom_len = self.fasta.fetch_seq_len(chrom);
+        if chrom_len == 0 || pos == 0 || pos + 1 >= chrom_len {
+            return None;
+        }
+        match self.fasta.fetch_seq_string(chrom, (pos - 1) as usize, (pos + 1) as usize) {
+            Ok(s) if s.len() == 3 => Some(s.to_uppercase()),
+            _ => None,
+        }
+    }
+
     /// Check if the trinucleotide context (upstream base + ref + downstream base)
     /// has GC content > 0.5 (i.e., at least 2 of 3 bases are G or C).
     /// pos is 0-based.
@@ -356,6 +378,18 @@ impl ReferenceHelper {
 fn is_oxog_candidate(ref_base: char, alt_base: char) -> bool {
     (ref_base == 'C' && alt_base == 'A') || (ref_base == 'G' && alt_base == 'T')
 }
+
+/// Trinucleotide contexts (prev+ref+next, upper-case) that trigger GQ-based filtering
+/// for OxoG candidates.
+const CONTEXT_GQ_FILTER_TRIPLETS: &[&str] = &[
+    "AGA", "AGC", "AGG",
+    "CCA", "CCC", "CCG", "CCT",
+    "CGA", "CGG",
+    "GCA", "GCC", "GCT",
+    "GGA", "GGC", "GGG",
+    "TCA", "TCC", "TCG", "TCT",
+    "TGA", "TGC", "TGG",
+];
 
 /// Convert a strand bias (SB) table to a Strand Odds Ratio (SOR) value.
 /// SB is a 4-element array: [refFwd, refRev, altFwd, altRev]
@@ -412,6 +446,7 @@ struct FilterStats {
     filtered_cpg: u64,
     filtered_homopolymer: u64,
     filtered_homopoly_strandbias: u64,
+    filtered_context_gq: u64,
     hard_removed: u64,
     passed: u64,
     filter_counts: HashMap<String, u64>,
@@ -432,6 +467,7 @@ impl FilterStats {
             format!("Filtered (OxoG in CpG context):    {:>10}", self.filtered_cpg),
             format!("Filtered (OxoG in homopolymer):    {:>10}", self.filtered_homopolymer),
             format!("Flagged  (HomoPoly strand bias):   {:>10}", self.filtered_homopoly_strandbias),
+            format!("Filtered (OxoG low-GQ context):    {:>10}", self.filtered_context_gq),
             "-".repeat(60),
         ];
 
@@ -520,6 +556,10 @@ fn compute_sor_from_sb(record: &rust_htslib::bcf::Record) -> Option<f64> {
         }
     }
     None
+}
+
+fn get_format_gq(record: &rust_htslib::bcf::Record, sample_idx: usize) -> Option<i32> {
+    get_format_int_array(record, b"GQ", sample_idx).and_then(|v| v.first().copied())
 }
 
 fn evaluate_variant(
@@ -633,6 +673,18 @@ fn evaluate_variant(
         result.filters_applied.push("HomoPoly_StrandBias".to_string());
     }
 
+    // --- Context-specific GQ filter ---
+    if let Some(gq_thresh) = config.context_gq_threshold {
+        if let Some(trinuc) = ref_helper.get_trinucleotide(&chrom, pos) {
+            if CONTEXT_GQ_FILTER_TRIPLETS.contains(&trinuc.as_str()) {
+                let gq = get_format_gq(record, 0);
+                if gq.map_or(true, |g| (g as f64) < gq_thresh) {
+                    result.filters_applied.push("OxoG_LowGQ_Context".to_string());
+                }
+            }
+        }
+    }
+
     result
 }
 
@@ -670,6 +722,10 @@ fn process_vcf(args: &Args, config: &FilterConfig) -> Result<()> {
         ("OxoG_CpG_SORonly_rev", format!("OxoG artifact in CpG context: G>T with SOR>{} (ReadPosRankSum missing)", config.cpg_sor_only_threshold)),
         ("OxoG_HomoPoly_SORonly_fwd", format!("OxoG artifact in homopolymer: C>A with SOR>{} (ReadPosRankSum missing)", config.homo_sor_only_threshold)),
         ("OxoG_HomoPoly_SORonly_rev", format!("OxoG artifact in homopolymer: G>T with SOR>{} (ReadPosRankSum missing)", config.homo_sor_only_threshold)),
+        ("OxoG_LowGQ_Context", {
+            let thresh = config.context_gq_threshold.map_or("disabled".to_string(), |t| t.to_string());
+            format!("OxoG candidate in OxoG-prone trinucleotide context with GQ<{} (contexts: AGA,AGC,AGG,CCA,CCC,CCG,CCT,CGA,CGG,GCA,GCC,GCT,GGA,GGC,GGG,TCA,TCC,TCG,TCT,TGA,TGC,TGG)", thresh)
+        }),
     ];
 
     for (filt_id, desc) in &filter_descriptions {
@@ -749,6 +805,8 @@ fn process_vcf(args: &Args, config: &FilterConfig) -> Result<()> {
                 stats.filtered_homopoly_strandbias += 1;
             } else if f.contains("HomoPoly") {
                 stats.filtered_homopolymer += 1;
+            } else if f == "OxoG_LowGQ_Context" {
+                stats.filtered_context_gq += 1;
             } else {
                 stats.filtered_standard += 1;
             }
